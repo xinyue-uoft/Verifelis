@@ -19,7 +19,12 @@ from .sandbox import Sandbox, SandboxViolation
 MAX_READ_BYTES = 256 * 1024
 MAX_GREP_MATCHES = 200
 MAX_LIST_ENTRIES = 500
-PIPELINE_TIMEOUT_S = 300
+PIPELINE_TIMEOUT_S = 600
+MAX_OUTLINE_LINES = 50
+
+# Derived artifacts (pipeline outputs) live here; each output dir is
+# auto-added to the sandbox after a successful run.
+DERIVED_BASE = Path("/tmp/verifelis-derived")
 
 
 @dataclass
@@ -56,14 +61,33 @@ class ToolCall:
 
 @dataclass
 class Pipeline:
-    """Whitelisted external command. argv items may contain '<file>'."""
+    """Whitelisted external command with fixed argv.
+
+    Placeholders: '<file>' (required, the sandboxed input) and optionally
+    '<outdir>' (a derived-output directory). With '<outdir>', the tool
+    result is an index of the produced files, not stdout, and the output
+    dir becomes readable through the sandbox.
+    """
 
     name: str
     argv: list[str]
     description: str
 
-    def build(self, file: Path) -> list[str]:
-        return [a.replace("<file>", str(file)) for a in self.argv]
+    @property
+    def has_outdir(self) -> bool:
+        return any("<outdir>" in a for a in self.argv)
+
+    def outdir_for(self, file: Path) -> Path:
+        return DERIVED_BASE / self.name / file.stem
+
+    def build(self, file: Path, outdir: Path | None = None) -> list[str]:
+        out = []
+        for a in self.argv:
+            a = a.replace("<file>", str(file))
+            if outdir is not None:
+                a = a.replace("<outdir>", str(outdir))
+            out.append(a)
+        return out
 
 
 def validate_pipeline(name: str, spec: dict) -> Pipeline:
@@ -79,6 +103,8 @@ def validate_pipeline(name: str, spec: dict) -> Pipeline:
         raise ValueError(f"{name}: argv must be a non-empty list of strings")
     if sum("<file>" in a for a in argv) != 1:
         raise ValueError(f"{name}: argv must contain the <file> placeholder exactly once")
+    if sum("<outdir>" in a for a in argv) > 1:
+        raise ValueError(f"{name}: argv may contain the <outdir> placeholder at most once")
     desc = spec.get("description", "")
     if not isinstance(desc, str):
         raise ValueError(f"{name}: description must be a string")
@@ -118,8 +144,9 @@ def default_pipelines() -> dict[str, Pipeline]:
     if shutil.which("mineru"):
         out["mineru"] = Pipeline(
             name="mineru",
-            argv=["mineru", "-p", "<file>", "-o", "/tmp/verifelis-mineru"],
-            description="Run minerU OCR on a PDF.",
+            argv=["mineru", "-p", "<file>", "-o", "<outdir>"],
+            description="Run minerU OCR on a PDF; returns an index of the "
+                        "extracted markdown to read incrementally.",
         )
     return out
 
@@ -221,19 +248,24 @@ class ToolBox:
         p = self.sandbox.resolve(path)
         if not p.is_file():
             raise ValueError(f"not a file: {p}")
-        data = p.read_bytes()[: MAX_READ_BYTES + 1]
-        truncated = len(data) > MAX_READ_BYTES
-        text = data[:MAX_READ_BYTES].decode("utf-8", errors="replace")
-        lines = text.splitlines()
-        if start_line is not None or end_line is not None:
-            s = max(1, start_line or 1)
-            e = min(len(lines), end_line or len(lines))
-            body = "\n".join(f"{i}: {lines[i - 1]}" for i in range(s, e + 1))
-        else:
-            body = "\n".join(f"{i}: {ln}" for i, ln in enumerate(lines, 1))
-        if truncated:
-            body += "\n… (file truncated at 256KB)"
-        return body
+        # Streamed so line ranges deep in large files stay reachable;
+        # only the returned range counts against the byte budget.
+        s = max(1, start_line or 1)
+        out: list[str] = []
+        budget = MAX_READ_BYTES
+        with p.open("r", encoding="utf-8", errors="replace") as fh:
+            for i, ln in enumerate(fh, 1):
+                if i < s:
+                    continue
+                if end_line is not None and i > end_line:
+                    break
+                ln = ln.rstrip("\n")
+                budget -= len(ln) + 1
+                if budget < 0:
+                    out.append(f"… (output truncated at 256KB; continue from line {i})")
+                    break
+                out.append(f"{i}: {ln}")
+        return "\n".join(out) or "(empty range)"
 
     def _grep(self, pattern: str, path: str, glob: str | None = None) -> str:
         p = self.sandbox.resolve(path)
@@ -267,17 +299,74 @@ class ToolBox:
     def _run_pipeline(self, pipeline: str, file: str) -> str:
         if pipeline not in self.pipelines:
             raise SandboxViolation(f"pipeline not whitelisted: {pipeline}")
+        pl = self.pipelines[pipeline]
         p = self.sandbox.resolve(file)
         if not p.is_file():
             raise ValueError(f"not a file: {p}")
-        argv = self.pipelines[pipeline].build(p)
-        proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=PIPELINE_TIMEOUT_S
+        if not pl.has_outdir:
+            proc = subprocess.run(
+                pl.build(p), capture_output=True, text=True, timeout=PIPELINE_TIMEOUT_S
+            )
+            if proc.returncode != 0:
+                raise ValueError(f"pipeline exited {proc.returncode}: {proc.stderr[:2000]}")
+            return proc.stdout[:MAX_READ_BYTES] or "(no output)"
+        # Derived-output pipeline: run (or reuse cache), whitelist the
+        # output dir, return an index instead of the content.
+        outdir = pl.outdir_for(p)
+        cached = self._derived_fresh(outdir, p)
+        if not cached:
+            outdir.mkdir(parents=True, exist_ok=True)
+            proc = subprocess.run(
+                pl.build(p, outdir), capture_output=True, text=True,
+                timeout=PIPELINE_TIMEOUT_S,
+            )
+            if proc.returncode != 0:
+                raise ValueError(f"pipeline exited {proc.returncode}: {proc.stderr[:2000]}")
+        self.sandbox.extra_roots.add(outdir.resolve())
+        return self._derived_index(pl.name, outdir, cached)
+
+    @staticmethod
+    def _derived_fresh(outdir: Path, source: Path) -> bool:
+        """True if a previous output exists and is newer than the source."""
+        if not outdir.is_dir():
+            return False
+        files = [f for f in outdir.rglob("*") if f.is_file()]
+        if not files:
+            return False
+        return max(f.stat().st_mtime for f in files) >= source.stat().st_mtime
+
+    @staticmethod
+    def _derived_index(name: str, outdir: Path, cached: bool) -> str:
+        files = sorted(f for f in outdir.rglob("*") if f.is_file())
+        if not files:
+            raise ValueError(f"pipeline '{name}' produced no files in {outdir}")
+        lines = [
+            f"pipeline '{name}' {'reused cached output' if cached else 'completed'}.",
+            f"output dir (now readable): {outdir}",
+            "files:",
+        ]
+        lines += [f"  {f.relative_to(outdir)} ({f.stat().st_size} bytes)" for f in files[:50]]
+        if len(files) > 50:
+            lines.append(f"  … {len(files) - 50} more files")
+        mds = [f for f in files if f.suffix == ".md"]
+        if mds:
+            main = max(mds, key=lambda f: f.stat().st_size)
+            with main.open("r", encoding="utf-8", errors="replace") as fh:
+                n_lines = 0
+                outline: list[str] = []
+                for ln in fh:
+                    n_lines += 1
+                    if ln.startswith("#") and len(outline) < MAX_OUTLINE_LINES:
+                        outline.append(f"  L{n_lines}: {ln.strip()[:120]}")
+            lines.append(f"main document: {main} ({n_lines} lines)")
+            if outline:
+                lines.append("outline (heading lines):")
+                lines += outline
+        lines.append(
+            "Do NOT read everything at once: use grep(pattern, path) and "
+            "read_file(path, start_line, end_line) on the paths above."
         )
-        out = proc.stdout[:MAX_READ_BYTES]
-        if proc.returncode != 0:
-            raise ValueError(f"pipeline exited {proc.returncode}: {proc.stderr[:2000]}")
-        return out or "(no output)"
+        return "\n".join(lines)
 
 
 def _spec(name: str, description: str, props: dict, required: list[str]) -> dict[str, Any]:

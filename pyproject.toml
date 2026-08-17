@@ -1,6 +1,6 @@
 [project]
 name = "verifelis"
-version = "1.0.0"
+version = "1.0.1"
 description = "Read-only agent for verified scientific PDF and information retrieval. A white cat works; a black cat verifies."
 readme = "README.md"
 requires-python = ">=3.11"

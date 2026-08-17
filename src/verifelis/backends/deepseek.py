@@ -20,10 +20,18 @@ class DeepSeekBackend:
     name = "deepseek"
 
     def __init__(self, model: str = "deepseek-chat", api_key: str = "") -> None:
+        from .. import credentials
+
         self.model = model
-        self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+        # Resolution order: explicit arg > env > stored credential.
+        self.api_key = (
+            api_key or os.environ.get("DEEPSEEK_API_KEY", "") or credentials.get("deepseek")
+        )
         if not self.api_key:
-            raise ValueError("DeepSeek requires an API key (DEEPSEEK_API_KEY or config api_key)")
+            raise ValueError(
+                "DeepSeek requires an API key (DEEPSEEK_API_KEY, config api_key, "
+                "or `verifelis login deepseek`)"
+            )
 
     async def chat(self, messages: list[Message], tools: list[dict[str, Any]]) -> Message:
         payload: dict[str, Any] = {

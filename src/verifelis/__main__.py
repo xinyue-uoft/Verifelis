@@ -56,7 +56,7 @@ def main() -> None:
 
     from .tui import VerifelisApp
 
-    VerifelisApp(backend, workdir, reviewer=args.reviewer).run()
+    VerifelisApp(backend, workdir, reviewer=args.reviewer, config=config).run()
 
 
 def _headless(backend, workdir: Path, reviewer: str, question: str) -> None:
@@ -77,8 +77,15 @@ def _headless(backend, workdir: Path, reviewer: str, question: str) -> None:
 
 
 def _login(argv: list[str]) -> None:
+    if argv[:1] == ["deepseek"]:
+        from . import credentials
+
+        key = input("Paste DeepSeek API key: ")
+        credentials.store("deepseek", key)
+        print(f"stored ({credentials.mask(key.strip())}).")
+        return
     if argv[:1] != ["openai"]:
-        print("usage: verifelis login openai [--paste-token]", file=sys.stderr)
+        print("usage: verifelis login {openai [--paste-token] | deepseek}", file=sys.stderr)
         sys.exit(2)
     from .backends import oauth
 

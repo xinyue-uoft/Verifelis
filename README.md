@@ -27,6 +27,17 @@ uv tool install --editable /path/to/Verifelis
 cd ~/papers/some-project && verifelis      # workdir defaults to .
 ```
 
+## In-TUI commands
+
+Type `/` to open the command menu (arrow keys navigate, tab/enter complete, esc closes):
+
+- `/login [deepseek <key> | openai [token]]` — store API keys persistently (`~/.config/verifelis/credentials.json`, mode 0600); bare `/login` shows what's stored; bare `/login openai` runs the browser OAuth flow.
+- `/model [backend] [model]` — show or switch backend/model at runtime; bare `/model` on ollama also lists local models. A failed switch (e.g. missing key) keeps the current backend.
+- `/reviewer [black|calico]` — switch the reviewer cat.
+- `/help`, `/exit`.
+
+Type `@` to reference workspace documents: a sandbox-filtered file menu opens (secrets never listed), and selected `@path` tokens are expanded into a reference section the white cat is instructed to read.
+
 ## Backends
 
 | Backend  | Format               | Auth                                   |

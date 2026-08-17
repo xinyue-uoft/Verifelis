@@ -68,9 +68,10 @@ def get_access_token() -> str | None:
 
 
 def _refresh(tokens: dict) -> str:
+    # Token endpoint requires form encoding (codex-rs/login/src/server.rs).
     resp = httpx.post(
         f"{ISSUER}/oauth/token",
-        json={
+        data={
             "grant_type": "refresh_token",
             "client_id": CLIENT_ID,
             "refresh_token": tokens["refresh_token"],
@@ -138,7 +139,7 @@ def login_interactive(timeout_s: int = 300) -> str:
         raise RuntimeError("no authorization code in callback")
     resp = httpx.post(
         f"{ISSUER}/oauth/token",
-        json={
+        data={
             "grant_type": "authorization_code",
             "client_id": CLIENT_ID,
             "code": code,

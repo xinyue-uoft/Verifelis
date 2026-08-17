@@ -45,6 +45,38 @@ async def test_app_boots_and_answers(workdir):
         assert "verified" in chat_lines
 
 
+async def test_approval_modal_deny(workdir, tmp_path_factory):
+    """Out-of-root tool call raises the modal; Deny yields DENIED result."""
+    from verifelis.backends import ToolCallRequest
+    from verifelis.tui import ApprovalModal
+
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "x.txt").write_text("outside data")
+    backend = FakeBackend([
+        Message(role="assistant",
+                tool_calls=[ToolCallRequest("c1", "read_file", {"path": str(outside / "x.txt")})]),
+        Message(role="assistant", content="Could not access the file."),
+        Message(role="assistant", content="[]"),
+    ])
+    app = VerifelisApp(backend, workdir, reviewer="black")
+    async with app.run_test() as pilot:
+        app.query_one("Input").value = "read the outside file"
+        await pilot.press("enter")
+        for _ in range(100):
+            await pilot.pause(0.05)
+            if isinstance(app.screen, ApprovalModal):
+                break
+        assert isinstance(app.screen, ApprovalModal)
+        await pilot.click("#deny")
+        for _ in range(100):
+            await pilot.pause(0.05)
+            if not app.busy:
+                break
+        assert not app.busy
+        chat_lines = "\n".join(str(s) for s in app.query_one("#chat").lines)
+        assert "DENIED" in chat_lines
+
+
 async def test_reviewer_toggle(workdir):
     app = VerifelisApp(FakeBackend([]), workdir, reviewer="black")
     async with app.run_test() as pilot:

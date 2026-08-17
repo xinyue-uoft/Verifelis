@@ -26,7 +26,7 @@ from textual.widgets import Button, Footer, Header, Input, Label, OptionList, Ri
 from .backends import Backend, fetch_model_catalog, make_backend, resolve_model
 from .orchestrator import Event, Orchestrator
 from .sandbox import Sandbox
-from .tools import ToolBox
+from .tools import ToolBox, load_pipelines
 
 AGENT_ICON = {"white": "🐈", "black": "🐈‍⬛", "calico": "🐱", "system": "🐾"}
 AGENT_NAME = {"white": "WhiteCat", "black": "BlackCat", "calico": "CalicoCat"}
@@ -42,6 +42,7 @@ COMMANDS = [
     ("/login", "/login [deepseek <key> | openai [token]]", "store API keys / OAuth login"),
     ("/model", "/model [backend] [model]", "show or switch backend/model"),
     ("/reviewer", "/reviewer [black|calico]", "switch reviewer cat"),
+    ("/pipelines", "/pipelines", "list whitelisted pipelines"),
     ("/help", "/help", "list commands"),
     ("/exit", "/exit", "leave gracefully"),
 ]
@@ -139,6 +140,7 @@ class VerifelisApp(App):
         self.reviewer = reviewer
         self.config = dict(config or {"backend": backend.name})
         self.busy = False
+        self.pipelines, self.pipeline_notes = load_pipelines(self.config)
         self.menu_mode = ""  # "" | "command" | "file"
         self.menu_items: list[str] = []
         self._file_index: list[str] | None = None
@@ -163,6 +165,8 @@ class VerifelisApp(App):
         chat.write(f"[b]🐾 Verifelis[/b] — workdir: {self.workdir}")
         chat.write(f"backend: {self.backend.name} · reviewer: {AGENT_NAME[self.reviewer]}")
         chat.write("Read-only. Secrets blocked. Everything verified. Type / for commands.\n")
+        for note in self.pipeline_notes:
+            chat.write(f"[yellow]⚠ {note}[/yellow]")
 
     def _chat(self) -> RichLog:
         return self.query_one("#chat", RichLog)
@@ -300,6 +304,7 @@ class VerifelisApp(App):
             "/help": self._cmd_help,
             "/exit": self._cmd_exit,
             "/reviewer": self._cmd_reviewer,
+            "/pipelines": self._cmd_pipelines,
             "/model": self._cmd_model,
             "/login": self._cmd_login,
         }.get(cmd)
@@ -329,6 +334,20 @@ class VerifelisApp(App):
             self.action_toggle_reviewer()
         else:
             self._chat().write("[red]usage: /reviewer [black|calico][/red]")
+
+    def _cmd_pipelines(self, args: list[str]) -> None:
+        chat = self._chat()
+        chat.write("[b]whitelisted pipelines[/b] (fixed argv; only <file> substitutes):")
+        if not self.pipelines:
+            chat.write("  (none active)")
+        for p in self.pipelines.values():
+            chat.write(f"  [b]{p.name}[/b]: {' '.join(p.argv)}  —  {p.description}")
+        for note in self.pipeline_notes:
+            chat.write(f"  [yellow]⚠ {note}[/yellow]")
+        chat.write(
+            '[dim]add more in ~/.config/verifelis/config.json → '
+            '"pipelines": {"name": {"argv": ["cmd", "<file>"], "description": "…"}}[/dim]'
+        )
 
     def _cmd_model(self, args: list[str]) -> None:
         chat = self._chat()
@@ -451,7 +470,7 @@ class VerifelisApp(App):
     @work(thread=True, exclusive=True)
     def run_session(self, question: str) -> None:
         sandbox = Sandbox(self.workdir, approval_gate=self._gate)
-        toolbox = ToolBox(sandbox=sandbox)
+        toolbox = ToolBox(sandbox=sandbox, pipelines=self.pipelines)
         orch = Orchestrator(
             self.backend,
             toolbox,

@@ -66,6 +66,47 @@ class Pipeline:
         return [a.replace("<file>", str(file)) for a in self.argv]
 
 
+def validate_pipeline(name: str, spec: dict) -> Pipeline:
+    """Validate a user-configured pipeline entry.
+
+    Contract: fixed argv of strings, exactly one element containing the
+    <file> placeholder. Nothing else is substitutable.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise ValueError(f"invalid pipeline name: {name!r}")
+    argv = spec.get("argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+        raise ValueError(f"{name}: argv must be a non-empty list of strings")
+    if sum("<file>" in a for a in argv) != 1:
+        raise ValueError(f"{name}: argv must contain the <file> placeholder exactly once")
+    desc = spec.get("description", "")
+    if not isinstance(desc, str):
+        raise ValueError(f"{name}: description must be a string")
+    return Pipeline(name=name, argv=list(argv), description=desc or f"user pipeline {name}")
+
+
+def load_pipelines(config: dict) -> tuple[dict[str, Pipeline], list[str]]:
+    """Defaults plus validated user entries from config["pipelines"].
+
+    Returns (active, notes). Structurally invalid entries and entries
+    whose binary is absent become notes instead of tools, so the model
+    is never offered a pipeline that cannot run.
+    """
+    active = default_pipelines()
+    notes: list[str] = []
+    for name, spec in (config.get("pipelines") or {}).items():
+        try:
+            p = validate_pipeline(name, spec if isinstance(spec, dict) else {})
+        except ValueError as e:
+            notes.append(f"pipeline config rejected: {e}")
+            continue
+        if shutil.which(p.argv[0]) is None:
+            notes.append(f"pipeline '{name}' inactive: binary '{p.argv[0]}' not found")
+            continue
+        active[name] = p
+    return active, notes
+
+
 def default_pipelines() -> dict[str, Pipeline]:
     out: dict[str, Pipeline] = {}
     if shutil.which("pdftotext"):

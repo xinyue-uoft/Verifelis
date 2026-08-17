@@ -7,6 +7,13 @@ Two cats work every question: a **white cat** 🐈 reads and reports; a **black 
 ## Principles
 
 - **Strictly read-only.** Tools: `list_dir`, `read_file`, `grep`, `stat`, and whitelisted pipelines only (fixed argv templates where only the target file is substitutable — e.g. `pdftotext`, `mineru` when installed). No writes, no arbitrary shell.
+- **Extensible whitelist.** Add your own pipelines (OCR, `pdftolatex`, …) in `~/.config/verifelis/config.json` — same contract, human-predetermined:
+
+  ```json
+  {"pipelines": {"pdftolatex": {"argv": ["pdftolatex", "<file>"], "description": "PDF to LaTeX"}}}
+  ```
+
+  Entries are validated (fixed argv of strings, `<file>` exactly once); malformed entries and missing binaries are reported at startup and by `/pipelines`, never offered to the model.
 - **Secrets are invisible.** `.env*`, SSH keys, `*.pem`, credentials, keychains, `.ssh/`, `.aws/` etc. are blocked at the sandbox layer — including through symlinks — and filtered out of directory listings and grep results.
 - **Confinement with a human gate.** All access is confined to the working directory. A path outside it triggers an approval modal; approval is per directory, denial is the default (and automatic in headless mode).
 - **Everything verified.** Claims must trace to a tool result actually obtained. The reviewer sees the full transcript plus the ground-truth tool log (head+tail excerpts with explicit truncation markers) and holds the same read-only tools, so it spot-checks doubted claims against the sources itself before filing: unverified claims, operations claimed but never performed, citations that don't match sources, and inconsistencies. The white cat must then address every comment.
@@ -34,6 +41,7 @@ Type `/` to open the command menu (arrow keys navigate, tab/enter complete, esc 
 - `/login [deepseek <key> | openai [token]]` — store API keys persistently (`~/.config/verifelis/credentials.json`, mode 0600); bare `/login` shows what's stored; bare `/login openai` runs the browser OAuth flow.
 - `/model [name]` — bare `/model` lists available models pulled live from every reachable/authenticated backend (ollama tags, deepseek and openai `/models`). `/model <name>` switches model *and* backend by catalog lookup; names present on several backends are disambiguated as `<backend>-<name>` (e.g. `ollama-deepseek-chat`). `/model <backend> <model>` stays explicit. A failed switch keeps the current backend.
 - `/reviewer [black|calico]` — switch the reviewer cat (a short introduction of the newcomer is shown).
+- `/pipelines` — list the active pipeline whitelist and any rejected/inactive config entries.
 - `/help`, `/exit` (see you next time meow).
 
 Answers render as markdown (bold, code, lists) in the chat pane.

@@ -67,7 +67,8 @@ async def test_slash_opens_and_filters_menu(workdir):
     async with app.run_test() as pilot:
         await pilot.press("/")
         assert app.menu_mode == "command"
-        assert len(app.menu_items) == 5
+        from verifelis.tui import COMMANDS
+        assert len(app.menu_items) == len(COMMANDS)
         await pilot.press("m", "o")
         assert app.menu_items == ["/model"]
         await pilot.press("enter")  # accept completion

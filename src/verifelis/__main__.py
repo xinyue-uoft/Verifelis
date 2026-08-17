@@ -63,12 +63,16 @@ def _headless(backend, workdir: Path, reviewer: str, question: str) -> None:
     """One question, events to stderr, final answer to stdout."""
     from .orchestrator import Orchestrator
     from .sandbox import Sandbox
-    from .tools import ToolBox
+    from .tools import ToolBox, load_pipelines
 
     def on_event(e) -> None:
         print(f"[{e.agent}:{e.kind}] {e.text[:200]}", file=sys.stderr)
 
-    toolbox = ToolBox(sandbox=Sandbox(workdir))  # headless: expansion always denied
+    pipelines, notes = load_pipelines(load_config())
+    for note in notes:
+        print(f"warning: {note}", file=sys.stderr)
+    # headless: expansion always denied
+    toolbox = ToolBox(sandbox=Sandbox(workdir), pipelines=pipelines)
     orch = Orchestrator(backend, toolbox, reviewer=reviewer, on_event=on_event)
     result = asyncio.run(orch.run(question))
     print(result.revised_answer or result.answer)

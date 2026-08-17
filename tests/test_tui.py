@@ -77,6 +77,32 @@ async def test_approval_modal_deny(workdir, tmp_path_factory):
         assert "DENIED" in chat_lines
 
 
+async def test_markdown_rendered_in_chat(workdir):
+    backend = FakeBackend([
+        Message(role="assistant", content="The **key value** is `42`."),
+        Message(role="assistant", content="[]"),
+    ])
+    app = VerifelisApp(backend, workdir, reviewer="black")
+    async with app.run_test() as pilot:
+        app.query_one("Input").value = "q"
+        await pilot.press("enter")
+        for _ in range(100):
+            await pilot.pause(0.05)
+            if not app.busy:
+                break
+        lines = app.query_one("#chat").lines
+        text = "\n".join(str(s) for s in lines)
+        # Markdown rendered: bold markers consumed, styled span present.
+        assert "key value" in text
+        assert "**key value**" not in text
+        # Lines are Strips of styled Segments; "key value" carries bold.
+        assert any(
+            seg.text.strip() == "key value" and "bold" in str(seg.style)
+            for line in lines
+            for seg in line._segments
+        )
+
+
 async def test_reviewer_toggle(workdir):
     app = VerifelisApp(FakeBackend([]), workdir, reviewer="black")
     async with app.run_test() as pilot:

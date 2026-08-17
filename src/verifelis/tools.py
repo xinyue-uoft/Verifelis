@@ -34,6 +34,25 @@ class ToolCall:
         status = "ERROR" if self.error else "ok"
         return f"{self.name}({self.args}) [{status}] -> {r}"
 
+    def excerpt(self, budget: int = 4096) -> str:
+        """Head+tail excerpt with an explicit truncation marker.
+
+        The marker tells a reviewer that unseen content exists and must be
+        read directly rather than assumed unverified.
+        """
+        status = "ERROR" if self.error else "ok"
+        header = f"{self.name}({self.args}) [{status}] ->\n"
+        if len(self.result) <= budget:
+            return header + self.result
+        head = self.result[: (budget * 2) // 3]
+        tail = self.result[-(budget // 3) :]
+        omitted = len(self.result) - len(head) - len(tail)
+        return (
+            header + head
+            + f"\n…[truncated: {omitted} bytes omitted — read the source yourself to verify]…\n"
+            + tail
+        )
+
 
 @dataclass
 class Pipeline:

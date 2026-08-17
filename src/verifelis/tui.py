@@ -15,7 +15,7 @@ import asyncio
 import threading
 from pathlib import Path
 
-import httpx
+from rich.markdown import Markdown
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -23,13 +23,19 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, OptionList, RichLog, Static
 
-from .backends import Backend, make_backend
+from .backends import Backend, fetch_model_catalog, make_backend, resolve_model
 from .orchestrator import Event, Orchestrator
 from .sandbox import Sandbox
 from .tools import ToolBox
 
 AGENT_ICON = {"white": "🐈", "black": "🐈‍⬛", "calico": "🐱", "system": "🐾"}
 AGENT_NAME = {"white": "WhiteCat", "black": "BlackCat", "calico": "CalicoCat"}
+REVIEWER_INTRO = {
+    "black": "🐈‍⬛ BlackCat — audits the transcript against the ground-truth tool log "
+             "and spot-checks doubted claims with its own read tools.",
+    "calico": "🐱 CalicoCat — the thorough one: re-executes every operation WhiteCat "
+              "performed, compares results, then audits with its own eyes.",
+}
 
 # (name, usage, description)
 COMMANDS = [
@@ -178,7 +184,9 @@ class VerifelisApp(App):
     def _set_reviewer(self, reviewer: str) -> None:
         self.reviewer = reviewer
         self._set_reviewer_panel()
-        self._chat().write(f"[i]reviewer switched to {AGENT_NAME[self.reviewer]}[/i]")
+        chat = self._chat()
+        chat.write(f"[i]reviewer switched to {AGENT_NAME[self.reviewer]}[/i]")
+        chat.write(f"[dim]{REVIEWER_INTRO[self.reviewer]}[/dim]")
 
     # -- workspace file index (sandbox-filtered, lazy) --
 
@@ -309,7 +317,7 @@ class VerifelisApp(App):
     def _cmd_exit(self, args: list[str]) -> None:
         if self.busy:
             self._chat().write("[i]finishing the current call, then leaving…[/i]")
-        self.exit()
+        self.exit(message="see you next time meow 🐾")
 
     def _cmd_reviewer(self, args: list[str]) -> None:
         if self.busy:
@@ -327,42 +335,61 @@ class VerifelisApp(App):
         if self.busy:
             chat.write("[i]cannot switch model mid-session[/i]")
             return
+        if len(args) == 2 and args[0] in ("ollama", "deepseek", "openai"):
+            self._switch_backend(args[0], args[1])
+            return
+        if len(args) > 1:
+            chat.write("[red]usage: /model [<model> | <backend> <model>][/red]")
+            return
+        # No args (list) or bare model name: needs the live catalog.
+        chat.write("[dim]fetching available models…[/dim]")
+        self._model_worker(args)
+
+    @work(thread=True)
+    def _model_worker(self, args: list[str]) -> None:
+        catalog = fetch_model_catalog(self.config)
+        self.call_from_thread(self._model_apply, catalog, args)
+
+    def _model_apply(self, catalog: dict[str, list[str]], args: list[str]) -> None:
+        chat = self._chat()
         if not args:
             chat.write(
                 f"backend: [b]{self.config.get('backend')}[/b] · "
                 f"model: [b]{self.config.get('model', '(default)')}[/b]"
             )
-            if self.config.get("backend") == "ollama":
-                self._list_ollama_models()
+            if not catalog:
+                chat.write("[dim]no backend reachable/authenticated for listing[/dim]")
+                return
+            counts: dict[str, int] = {}
+            for models in catalog.values():
+                for m in models:
+                    counts[m] = counts.get(m, 0) + 1
+            for b, models in catalog.items():
+                shown = [f"{b}-{m}" if counts[m] > 1 else m for m in models]
+                chat.write(f"[b]{b}[/b]: " + (", ".join(shown) or "(none)"))
+            chat.write("[dim]switch with /model <name>[/dim]")
             return
+        try:
+            backend_name, model = resolve_model(
+                catalog, args[0], self.config.get("backend", "ollama")
+            )
+        except ValueError as e:
+            chat.write(f"[red]{e}[/red]")
+            return
+        self._switch_backend(backend_name, model)
+
+    def _switch_backend(self, backend_name: str, model: str) -> None:
+        chat = self._chat()
         new = dict(self.config)
-        if len(args) == 1:
-            new["model"] = args[0]
-        elif args[0] in ("ollama", "deepseek", "openai"):
-            new["backend"] = args[0]
-            new["model"] = args[1]
-        else:
-            chat.write("[red]usage: /model [ollama|deepseek|openai] <model>[/red]")
-            return
+        new["backend"] = backend_name
+        new["model"] = model
         try:
             self.backend = make_backend(new)
         except (ValueError, KeyError) as e:
             chat.write(f"[red]switch failed: {e}[/red] — keeping {self.config.get('backend')}")
             return
         self.config = new
-        chat.write(f"[green]switched to {new['backend']} · {new['model']}[/green]")
-
-    @work(thread=True)
-    def _list_ollama_models(self) -> None:
-        host = self.config.get("ollama_host", "http://localhost:11434")
-        try:
-            r = httpx.get(f"{host}/api/tags", timeout=5)
-            names = [m["name"] for m in r.json().get("models", [])]
-            self.call_from_thread(
-                self._chat_write, "local models: " + (", ".join(names) or "(none)")
-            )
-        except httpx.HTTPError as e:
-            self.call_from_thread(self._chat_write, f"[red]ollama unreachable: {e}[/red]")
+        chat.write(f"[green]switched to {backend_name} · {model}[/green]")
 
     def _cmd_login(self, args: list[str]) -> None:
         from . import credentials
@@ -465,7 +492,8 @@ class VerifelisApp(App):
         elif e.kind == "comment":
             review.write(f"[yellow]{icon} {e.text}[/yellow]")
         elif e.kind == "message":
-            chat.write(f"{icon} [b]{AGENT_NAME.get(e.agent, e.agent)}:[/b] {e.text}")
+            chat.write(f"{icon} [b]{AGENT_NAME.get(e.agent, e.agent)}:[/b]")
+            chat.write(Markdown(e.text))
         elif e.kind == "done":
             chat.write(f"[b green]✓ {e.text}[/b green]")
         elif e.kind == "error":

@@ -85,6 +85,77 @@ def to_openai_chat(messages: list[Message], args_as_object: bool = False) -> lis
     return wire
 
 
+def fetch_model_catalog(config: dict[str, Any]) -> dict[str, list[str]]:
+    """Available models per backend, for backends whose auth is present.
+
+    ollama: GET /api/tags. deepseek/openai: OpenAI-style GET /models
+    (deepseek endpoint per api-docs.deepseek.com "Lists Models").
+    Unreachable or unauthenticated backends are simply omitted.
+    """
+    import os
+
+    import httpx
+
+    from .. import credentials
+    from . import oauth
+
+    catalog: dict[str, list[str]] = {}
+    host = config.get("ollama_host", "http://localhost:11434").rstrip("/")
+    try:
+        r = httpx.get(f"{host}/api/tags", timeout=5)
+        r.raise_for_status()
+        catalog["ollama"] = sorted(m["name"] for m in r.json().get("models", []))
+    except (httpx.HTTPError, KeyError, ValueError):
+        pass
+    ds_key = config.get("api_key") or os.environ.get("DEEPSEEK_API_KEY") or credentials.get("deepseek")
+    if ds_key:
+        try:
+            r = httpx.get(
+                "https://api.deepseek.com/models",
+                headers={"Authorization": f"Bearer {ds_key}"},
+                timeout=10,
+            )
+            r.raise_for_status()
+            catalog["deepseek"] = sorted(m["id"] for m in r.json().get("data", []))
+        except (httpx.HTTPError, KeyError, ValueError):
+            pass
+    oa_token = os.environ.get("OPENAI_API_KEY") or oauth.get_access_token()
+    if oa_token:
+        try:
+            r = httpx.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {oa_token}"},
+                timeout=10,
+            )
+            r.raise_for_status()
+            catalog["openai"] = sorted(m["id"] for m in r.json().get("data", []))
+        except (httpx.HTTPError, KeyError, ValueError):
+            pass
+    return catalog
+
+
+def resolve_model(
+    catalog: dict[str, list[str]], name: str, current_backend: str
+) -> tuple[str, str]:
+    """Resolve a bare or backend-prefixed model name to (backend, model).
+
+    Prefixed form ("deepseek-deepseek-chat") always wins. A bare name found
+    in exactly one backend switches to it; duplicates raise with the
+    prefixed candidates; an unknown name stays on the current backend.
+    """
+    for b, models in catalog.items():
+        prefix = b + "-"
+        if name.startswith(prefix) and name[len(prefix):] in models:
+            return b, name[len(prefix):]
+    owners = [b for b, models in catalog.items() if name in models]
+    if len(owners) == 1:
+        return owners[0], name
+    if len(owners) > 1:
+        options = ", ".join(f"{b}-{name}" for b in owners)
+        raise ValueError(f"'{name}' exists on several backends — use one of: {options}")
+    return current_backend, name
+
+
 def make_backend(config: dict[str, Any]) -> Backend:
     kind = config.get("backend", "ollama")
     if kind == "ollama":

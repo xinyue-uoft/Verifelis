@@ -32,6 +32,12 @@ REVIEW_INSTRUCTIONS = """You are {name}, a strict verification reviewer. You are
 WhiteCat's full transcript: its chain of thought, its actual tool call log (ground \
 truth of what was really executed), and its final answer.
 
+You have the same read-only tools WhiteCat had. Tool results in the log may be \
+truncated (marked "[truncated: ...]"); truncation is NOT evidence that a claim is \
+unverified. Before filing an unverified_claim or ungrounded_source comment, attempt \
+to verify the claim yourself by reading the cited source with your tools; file the \
+comment only if your own check fails or the source cannot be found.
+
 Audit the final answer against the tool log. Flag:
 1. unverified_claim - a claim not supported by any tool result actually obtained
 2. claimed_not_performed - an operation WhiteCat claims to have done that does not \
@@ -39,7 +45,7 @@ appear in the tool log
 3. ungrounded_source - a citation that does not match the cited file/line content
 4. inconsistency - answer contradicts tool results or its own reasoning
 
-Respond with ONLY a JSON array (no prose). Each element:
+When your audit is done, respond with ONLY a JSON array (no prose). Each element:
 {{"type": "<one of the four above>", "claim": "<the problematic text>", "comment": "<why it fails and what would fix it>"}}
 Return [] if the answer is fully verified."""
 
@@ -125,14 +131,20 @@ class Orchestrator:
         self.on_event(Event(kind=kind, agent=agent, text=text, data=data))
 
     async def _agent_loop(
-        self, agent: str, messages: list[Message], use_tools: bool = True
+        self,
+        agent: str,
+        messages: list[Message],
+        backend: Backend | None = None,
+        toolbox: ToolBox | None = None,
     ) -> Message:
         """Standard tool loop. Mutates `messages` in place."""
-        tools = self.toolbox.specs() if use_tools else []
+        backend = backend or self.backend
+        toolbox = toolbox or self.toolbox
+        tools = toolbox.specs()
         nudges = 0
         for _ in range(MAX_TOOL_ITERATIONS):
             self._emit("status", agent, "thinking…")
-            reply = await self.backend.chat(messages, tools)
+            reply = await backend.chat(messages, tools)
             messages.append(reply)
             if reply.reasoning:
                 self._emit("reasoning", agent, reply.reasoning)
@@ -148,7 +160,7 @@ class Orchestrator:
                 return reply
             for tc in reply.tool_calls:
                 self._emit("status", agent, f"running {tc.name}({_short(tc.arguments)})")
-                result = self.toolbox.call(tc.name, tc.arguments)
+                result = toolbox.call(tc.name, tc.arguments)
                 self._emit("tool", agent, result.digest(), data=result)
                 messages.append(
                     Message(role="tool", content=result.result, tool_call_id=tc.id)
@@ -171,7 +183,7 @@ class Orchestrator:
                     parts.append(f"[assistant said]\n{m.content}")
         parts.append("\n=== Actual tool log (ground truth) ===")
         if tool_log:
-            parts.extend(tc.digest(limit=600) for tc in tool_log)
+            parts.extend(tc.excerpt() for tc in tool_log)
         else:
             parts.append("(no tools were executed)")
         return "\n".join(parts)
@@ -220,9 +232,12 @@ class Orchestrator:
         ]
         agent_tag = self.reviewer
         self._emit("status", agent_tag, "auditing transcript…")
-        review_reply = await self.reviewer_backend.chat(review_messages, [])
-        if review_reply.reasoning:
-            self._emit("reasoning", agent_tag, review_reply.reasoning)
+        # Reviewer gets its own read-only ToolBox for spot-checking claims;
+        # separate instance keeps WhiteCat's tool log clean.
+        review_box = ToolBox(sandbox=self.toolbox.sandbox, pipelines=self.toolbox.pipelines)
+        review_reply = await self._agent_loop(
+            agent_tag, review_messages, backend=self.reviewer_backend, toolbox=review_box
+        )
         comments = parse_review(review_reply.content)
         for c in comments:
             self._emit("comment", agent_tag, f"[{c.type}] {c.claim}: {c.comment}", data=c)

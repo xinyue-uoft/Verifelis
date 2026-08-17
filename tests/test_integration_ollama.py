@@ -55,5 +55,8 @@ async def test_live_calico_replay(corpus):
     events = []
     orch = Orchestrator(backend, box, reviewer="calico", on_event=events.append)
     result = await orch.run("What substrate was used? If unknown, say so.")
-    replayed = [e for e in events if e.agent == "calico" and e.kind == "tool"]
+    # Calico may also spot-check with its own tools during judging;
+    # count only replay events, which must mirror WhiteCat's log 1:1.
+    replayed = [e for e in events
+                if e.agent == "calico" and e.kind == "tool" and e.text.startswith("replay ")]
     assert len(replayed) == len(result.tool_log)

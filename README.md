@@ -20,6 +20,13 @@ uv run verifelis . --once "question"       # headless one-shot (events on stderr
 uv run verifelis . --backend ollama --model qwen3.5:9b-q4_K_M --reviewer calico
 ```
 
+Register as a global tool (puts `verifelis` on PATH; run it from inside any work directory, which becomes the read-only sandbox root):
+
+```sh
+uv tool install --editable /path/to/Verifelis
+cd ~/papers/some-project && verifelis      # workdir defaults to .
+```
+
 ## Backends
 
 | Backend  | Format               | Auth                                   |

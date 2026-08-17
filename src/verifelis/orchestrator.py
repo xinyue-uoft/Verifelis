@@ -129,6 +129,7 @@ class Orchestrator:
     ) -> Message:
         """Standard tool loop. Mutates `messages` in place."""
         tools = self.toolbox.specs() if use_tools else []
+        nudges = 0
         for _ in range(MAX_TOOL_ITERATIONS):
             self._emit("status", agent, "thinking…")
             reply = await self.backend.chat(messages, tools)
@@ -136,6 +137,14 @@ class Orchestrator:
             if reply.reasoning:
                 self._emit("reasoning", agent, reply.reasoning)
             if not reply.tool_calls:
+                # Reasoning models sometimes emit thinking with empty content.
+                if not reply.content.strip() and nudges < 2:
+                    nudges += 1
+                    self._emit("status", agent, "empty reply, asking for final answer…")
+                    messages.append(
+                        Message(role="user", content="Your reply had no content. State your final answer now.")
+                    )
+                    continue
                 return reply
             for tc in reply.tool_calls:
                 self._emit("status", agent, f"running {tc.name}({_short(tc.arguments)})")

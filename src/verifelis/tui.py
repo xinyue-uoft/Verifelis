@@ -43,6 +43,7 @@ COMMANDS = [
     ("/model", "/model [backend] [model]", "show or switch backend/model"),
     ("/reviewer", "/reviewer [black|calico]", "switch reviewer cat"),
     ("/pipelines", "/pipelines", "list whitelisted pipelines"),
+    ("/new", "/new", "clear the slate for a fresh question"),
     ("/help", "/help", "list commands"),
     ("/exit", "/exit", "leave gracefully"),
 ]
@@ -305,6 +306,7 @@ class VerifelisApp(App):
             "/exit": self._cmd_exit,
             "/reviewer": self._cmd_reviewer,
             "/pipelines": self._cmd_pipelines,
+            "/new": self._cmd_new,
             "/model": self._cmd_model,
             "/login": self._cmd_login,
         }.get(cmd)
@@ -334,6 +336,19 @@ class VerifelisApp(App):
             self.action_toggle_reviewer()
         else:
             self._chat().write("[red]usage: /reviewer [black|calico][/red]")
+
+    def _cmd_new(self, args: list[str]) -> None:
+        if self.busy:
+            self._chat().write("[i]a session is still running — /new after it finishes[/i]")
+            return
+        self.query_one("#chat", RichLog).clear()
+        self.query_one("#review", RichLog).clear()
+        self._file_index = None  # rescan workspace on next @ or reference
+        self._session_done()  # reset both cat panels to idle
+        chat = self._chat()
+        chat.write("[b]🐾 fresh page[/b] — the cats stretch and sit back down.")
+        chat.write(f"workdir: {self.workdir} · backend: {self.config.get('backend')} · "
+                   f"reviewer: {AGENT_NAME[self.reviewer]}\n")
 
     def _cmd_pipelines(self, args: list[str]) -> None:
         chat = self._chat()

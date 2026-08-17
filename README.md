@@ -43,6 +43,7 @@ Type `/` to open the command menu (arrow keys navigate, tab/enter complete, esc 
 - `/model [name]` — bare `/model` lists available models pulled live from every reachable/authenticated backend (ollama tags, deepseek and openai `/models`). `/model <name>` switches model *and* backend by catalog lookup; names present on several backends are disambiguated as `<backend>-<name>` (e.g. `ollama-deepseek-chat`). `/model <backend> <model>` stays explicit. A failed switch keeps the current backend.
 - `/reviewer [black|calico]` — switch the reviewer cat (a short introduction of the newcomer is shown).
 - `/pipelines` — list the active pipeline whitelist and any rejected/inactive config entries.
+- `/new` — clear the slate (chat, review pane, workspace index) for a fresh question.
 - `/help`, `/exit` (see you next time meow).
 
 Answers render as markdown (bold, code, lists) in the chat pane.

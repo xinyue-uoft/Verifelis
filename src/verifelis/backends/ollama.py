@@ -24,7 +24,7 @@ class OllamaBackend:
     async def chat(self, messages: list[Message], tools: list[dict[str, Any]]) -> Message:
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": to_openai_chat(messages),
+            "messages": to_openai_chat(messages, args_as_object=True),
             "stream": False,
         }
         if tools:

@@ -2,28 +2,41 @@
 
 A read-only agent for verified scientific PDF and information retrieval, in a TUI.
 
-Two cats work every question: a **white cat** reads and reports; a **black cat** audits the white cat's claims — including its chain of thought and its actual tool log — and files comments the white cat must address. A **calico cat** may replace the black cat for thorough reviews: it re-executes every operation itself.
+Two cats work every question: a **white cat** 🐈 reads and reports; a **black cat** 🐈‍⬛ audits the white cat's claims — including its chain of thought and its actual tool log — and files comments the white cat must address. A **calico cat** 🐱 may replace the black cat (`ctrl+r` in the TUI, or `--reviewer calico`): it is more thorough and re-executes every one of the white cat's operations itself before judging.
 
 ## Principles
 
-- **Strictly read-only.** Tools: `list_dir`, `read_file`, `grep`, `stat`, and whitelisted pipelines (fixed argv, only the target file substitutable). No writes, no arbitrary shell.
-- **Secrets are invisible.** `.env`, SSH keys, credentials, keychains are blocked at the sandbox layer and filtered out of listings and search results.
-- **Confinement with a human gate.** Access outside the working directory requires interactive approval, per directory.
-- **Everything verified.** Claims must trace to a tool result. The reviewer flags unverified claims and operations claimed but never performed.
+- **Strictly read-only.** Tools: `list_dir`, `read_file`, `grep`, `stat`, and whitelisted pipelines only (fixed argv templates where only the target file is substitutable — e.g. `pdftotext`, `mineru` when installed). No writes, no arbitrary shell.
+- **Secrets are invisible.** `.env*`, SSH keys, `*.pem`, credentials, keychains, `.ssh/`, `.aws/` etc. are blocked at the sandbox layer — including through symlinks — and filtered out of directory listings and grep results.
+- **Confinement with a human gate.** All access is confined to the working directory. A path outside it triggers an approval modal; approval is per directory, denial is the default (and automatic in headless mode).
+- **Everything verified.** Claims must trace to a tool result actually obtained. The reviewer sees the full transcript plus the ground-truth tool log and flags: unverified claims, operations claimed but never performed, citations that don't match sources, and inconsistencies. The white cat must then address every comment.
 
-## Install
+## Install & run
 
 ```sh
 uv sync
-uv run verifelis [workdir]
+uv run verifelis [workdir]                 # TUI
+uv run verifelis . --once "question"       # headless one-shot (events on stderr)
+uv run verifelis . --backend ollama --model qwen3.5:9b-q4_K_M --reviewer calico
 ```
 
 ## Backends
 
-| Backend  | Auth              | Notes                          |
-|----------|-------------------|--------------------------------|
-| ollama   | none (local)      | default; used for testing      |
-| deepseek | API key           | `DEEPSEEK_API_KEY`             |
-| openai   | OAuth (PKCE) or token paste | Responses API format |
+| Backend  | Format               | Auth                                   |
+|----------|----------------------|----------------------------------------|
+| ollama   | ollama /api/chat     | none (local); used for testing         |
+| deepseek | chat completions     | API key: `DEEPSEEK_API_KEY`            |
+| openai   | Responses API        | `OPENAI_API_KEY`, or OAuth: `verifelis login openai` |
 
-Configure in `~/.config/verifelis/config.json` or via `--backend`.
+The OpenAI OAuth flow is PKCE (S256) against `auth.openai.com` with endpoints and parameters taken from the open-source `openai/codex` CLI; `verifelis login openai --paste-token` stores a pasted key/token instead. API-key auth is the tested path; ChatGPT-plan OAuth tokens may not be accepted by `api.openai.com` for all account types.
+
+Persistent config: `~/.config/verifelis/config.json`, e.g. `{"backend": "ollama", "model": "qwen3.5:9b-q4_K_M"}`. CLI flags override it.
+
+## Tests
+
+```sh
+uv run pytest                 # unit + TUI smoke tests; live ollama tests
+                              # auto-skip when ollama/qwen3.5:9b-q4_K_M is absent
+```
+
+The sandbox suite covers symlink escapes, path traversal, secret-pattern blocking (never overridable, even with approval), and grep/listing leak prevention. The verification loop is tested against a deterministic scripted backend, plus a live end-to-end run on ollama.

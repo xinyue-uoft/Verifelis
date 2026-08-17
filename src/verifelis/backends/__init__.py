@@ -49,8 +49,13 @@ def strip_think_tags(content: str) -> tuple[str, str]:
     return out.strip(), "\n".join(p.strip() for p in reasoning_parts)
 
 
-def to_openai_chat(messages: list[Message]) -> list[dict[str, Any]]:
-    """Convert to OpenAI chat-completions wire format (ollama/deepseek)."""
+def to_openai_chat(messages: list[Message], args_as_object: bool = False) -> list[dict[str, Any]]:
+    """Convert to chat-completions wire format.
+
+    args_as_object=True for ollama: it requires tool_call arguments as a
+    JSON object and non-null assistant content; OpenAI/DeepSeek require a
+    JSON-encoded string.
+    """
     wire: list[dict[str, Any]] = []
     for m in messages:
         if m.role == "tool":
@@ -59,12 +64,17 @@ def to_openai_chat(messages: list[Message]) -> list[dict[str, Any]]:
             wire.append(
                 {
                     "role": "assistant",
-                    "content": m.content or None,
+                    "content": m.content if args_as_object else (m.content or None),
                     "tool_calls": [
                         {
                             "id": tc.id,
                             "type": "function",
-                            "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments
+                                if args_as_object
+                                else json.dumps(tc.arguments),
+                            },
                         }
                         for tc in m.tool_calls
                     ],

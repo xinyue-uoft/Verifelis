@@ -161,3 +161,20 @@ async def test_at_reference_expanded_in_question(workdir):
         user_msg = backend.calls[0][1].content
         assert "[Referenced documents]" in user_msg
         assert "- doc.txt" in user_msg
+
+
+# -- /iterations --
+
+async def test_iterations_command(workdir):
+    app = make_app(workdir)
+    async with app.run_test() as pilot:
+        inp = app.query_one(PromptInput)
+        inp.value = "/iterations 5"
+        await pilot.press("enter")
+        assert app.config["max_iterations"] == 5
+        inp.value = "/iterations zero"
+        await pilot.press("enter")
+        assert app.config["max_iterations"] == 5
+        inp.value = "/iterations 0"
+        await pilot.press("enter")
+        assert app.config["max_iterations"] == 5

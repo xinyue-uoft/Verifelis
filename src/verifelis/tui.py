@@ -12,19 +12,25 @@ file menu whose selections become document references in the question.
 from __future__ import annotations
 
 import asyncio
+import shutil
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
+from rich.cells import cell_len
 from rich.markdown import Markdown
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.selection import Selection
+from textual.strip import Strip
 from textual.widgets import Button, Footer, Header, Input, Label, OptionList, RichLog, Static
 
 from .backends import Backend, fetch_model_catalog, make_backend, resolve_model
-from .orchestrator import Event, Orchestrator
+from .orchestrator import MAX_TOOL_ITERATIONS, Event, Orchestrator
 from .sandbox import Sandbox
 from .tools import ToolBox, load_pipelines
 
@@ -42,6 +48,7 @@ COMMANDS = [
     ("/login", "/login [deepseek <key> | openai [token]]", "store API keys / OAuth login"),
     ("/model", "/model [backend] [model]", "show or switch backend/model"),
     ("/reviewer", "/reviewer [black|calico]", "switch reviewer cat"),
+    ("/iterations", "/iterations [n]", "show or set tool-call limit per agent"),
     ("/pipelines", "/pipelines", "list whitelisted pipelines"),
     ("/new", "/new", "clear the slate for a fresh question"),
     ("/help", "/help", "list commands"),
@@ -77,6 +84,37 @@ class ApprovalModal(ModalScreen[bool]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "allow")
+
+
+class SelectableLog(RichLog):
+    """RichLog with mouse text selection. RichLog (Textual 8.x) uses the line
+    API and does not implement get_selection or selection highlighting."""
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        text = "\n".join(strip.text for strip in self.lines)
+        return selection.extract(text), "\n"
+
+    def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
+        strip = super()._render_line(y, scroll_x, width)
+        if y >= len(self.lines):
+            return strip
+        selection = self.text_selection
+        span = selection.get_span(y) if selection is not None else None
+        if span is not None:
+            start, end = span  # character offsets; Strip.crop takes cell offsets
+            text = strip.text
+            if end == -1:
+                end = len(text)
+            start, end = cell_len(text[:start]), cell_len(text[:end])
+            style = self.screen.get_component_rich_style("screen--selection")
+            strip = Strip.join([
+                strip.crop(0, start),
+                strip.crop(start, end).apply_style(style),
+                strip.crop(end),
+            ])
+        # Offsets map mouse cells to content chars. Apply after crop: crop keeps
+        # the parent segment's offset meta, which misplaces split segments.
+        return strip.apply_offsets(scroll_x, y)
 
 
 class CatPanel(Static):
@@ -150,12 +188,12 @@ class VerifelisApp(App):
         yield Header()
         with Horizontal(id="main"):
             with Vertical(id="left"):
-                yield RichLog(id="chat", wrap=True, markup=True)
+                yield SelectableLog(id="chat", wrap=True, markup=True)
                 yield OptionList(id="menu")
             with Vertical(id="right"):
                 yield CatPanel("white", id="white-panel")
                 yield CatPanel("black", id="black-panel")
-                yield RichLog(id="review", wrap=True, markup=True)
+                yield SelectableLog(id="review", wrap=True, markup=True)
         yield PromptInput(placeholder="Ask about the documents… ( / commands · @ files )")
         yield Footer()
 
@@ -171,6 +209,17 @@ class VerifelisApp(App):
 
     def _chat(self) -> RichLog:
         return self.query_one("#chat", RichLog)
+
+    def on_text_selected(self, event: events.TextSelected) -> None:
+        """Auto-copy on mouse-up, terminal-style."""
+        text = self.screen.get_selected_text()
+        if text:
+            self.copy_to_clipboard(text)
+
+    def copy_to_clipboard(self, text: str) -> None:
+        super().copy_to_clipboard(text)  # OSC 52; ignored by macOS Terminal.app
+        if sys.platform == "darwin" and shutil.which("pbcopy"):
+            subprocess.run(["pbcopy"], input=text.encode(), check=False)
 
     def _chat_write(self, text: str) -> None:
         """UI-thread target for call_from_thread; workers must not query the DOM."""
@@ -305,6 +354,7 @@ class VerifelisApp(App):
             "/help": self._cmd_help,
             "/exit": self._cmd_exit,
             "/reviewer": self._cmd_reviewer,
+            "/iterations": self._cmd_iterations,
             "/pipelines": self._cmd_pipelines,
             "/new": self._cmd_new,
             "/model": self._cmd_model,
@@ -336,6 +386,26 @@ class VerifelisApp(App):
             self.action_toggle_reviewer()
         else:
             self._chat().write("[red]usage: /reviewer [black|calico][/red]")
+
+    def _cmd_iterations(self, args: list[str]) -> None:
+        chat = self._chat()
+        current = self.config.get("max_iterations", MAX_TOOL_ITERATIONS)
+        if not args:
+            chat.write(f"tool-call limit: [b]{current}[/b] per agent loop")
+            chat.write("[dim]set with /iterations <n>; persist via \"max_iterations\" in config.json[/dim]")
+            return
+        if self.busy:
+            chat.write("[i]cannot change the limit mid-session[/i]")
+            return
+        try:
+            n = int(args[0])
+            if n < 1:
+                raise ValueError
+        except ValueError:
+            chat.write("[red]usage: /iterations <positive integer>[/red]")
+            return
+        self.config["max_iterations"] = n
+        chat.write(f"[green]tool-call limit: {current} → {n}[/green]")
 
     def _cmd_new(self, args: list[str]) -> None:
         if self.busy:
@@ -491,6 +561,7 @@ class VerifelisApp(App):
             toolbox,
             reviewer=self.reviewer,
             on_event=lambda e: self.call_from_thread(self._on_orch_event, e),
+            max_iterations=self.config.get("max_iterations", MAX_TOOL_ITERATIONS),
         )
         try:
             asyncio.run(orch.run(question))

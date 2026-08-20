@@ -124,3 +124,13 @@ def test_parse_review_robust():
                        '"claim": "x", "comment": "y"}]\nDone.')
     assert len(got) == 1
     assert got[0].claim == "x"
+
+
+async def test_max_iterations_respected(box):
+    tc = lambda i: msg(tool_calls=[ToolCallRequest(f"c{i}", "read_file", {"path": "notes.txt"})])
+    backend = FakeBackend([tc(1), tc(2), tc(3)])
+    events = []
+    orch = Orchestrator(backend, box, reviewer="black", on_event=events.append, max_iterations=2)
+    reply = await orch._agent_loop("WhiteCat", [Message(role="user", content="q")])
+    assert len(backend.calls) == 2
+    assert any(e.kind == "error" and "iteration limit" in e.text for e in events)

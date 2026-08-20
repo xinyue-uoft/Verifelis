@@ -44,6 +44,9 @@ Type `/` to open the command menu (arrow keys navigate, tab/enter complete, esc 
 - `/reviewer [black|calico]` — switch the reviewer cat (a short introduction of the newcomer is shown).
 - `/pipelines` — list the active pipeline whitelist and any rejected/inactive config entries.
 - `/new` — clear the slate (chat, review pane, workspace index) for a fresh question.
+- `/iterations [n]` — show or set the tool-call limit per agent loop for this session.
+
+Drag to select text in the chat or review pane; the selection is copied to the clipboard on release (OSC 52, plus `pbcopy` on macOS).
 - `/help`, `/exit` (see you next time meow).
 
 Answers render as markdown (bold, code, lists) in the chat pane.
@@ -60,7 +63,7 @@ Type `@` to reference workspace documents: a sandbox-filtered file menu opens (s
 
 The OpenAI OAuth flow is PKCE (S256) against `auth.openai.com` with endpoints and parameters taken from the open-source `openai/codex` CLI; `verifelis login openai --paste-token` stores a pasted key/token instead. API-key auth is the tested path; ChatGPT-plan OAuth tokens may not be accepted by `api.openai.com` for all account types.
 
-Persistent config: `~/.config/verifelis/config.json`, e.g. `{"backend": "ollama", "model": "qwen3.5:9b-q4_K_M"}`. CLI flags override it.
+Persistent config: `~/.config/verifelis/config.json`, e.g. `{"backend": "ollama", "model": "qwen3.5:9b-q4_K_M", "max_iterations": 20}`. CLI flags override it. `max_iterations` caps tool calls per agent loop (default 20); change it for the session with `/iterations <n>`.
 
 ## Tests
 

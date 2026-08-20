@@ -120,8 +120,10 @@ class Orchestrator:
         reviewer: str = "black",  # black | calico
         on_event: EventSink | None = None,
         reviewer_backend: Backend | None = None,
+        max_iterations: int = MAX_TOOL_ITERATIONS,
     ) -> None:
         self.backend = backend
+        self.max_iterations = max_iterations
         self.reviewer_backend = reviewer_backend or backend
         self.toolbox = toolbox
         self.reviewer = reviewer
@@ -142,7 +144,7 @@ class Orchestrator:
         toolbox = toolbox or self.toolbox
         tools = toolbox.specs()
         nudges = 0
-        for _ in range(MAX_TOOL_ITERATIONS):
+        for _ in range(self.max_iterations):
             self._emit("status", agent, "thinking…")
             reply = await backend.chat(messages, tools)
             messages.append(reply)
